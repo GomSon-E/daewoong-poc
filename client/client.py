@@ -3,6 +3,7 @@ from pypylon import pylon
 import cv2
 import time
 import numpy as np
+import json
 
 def server_test():
     try:
@@ -28,6 +29,36 @@ def auto_white_balance(image):
     # 값이 255를 넘지 않도록 클리핑
     image = np.clip(image, 0, 255).astype(np.uint8)
     return image
+
+def print_detection_results(response_data):
+    """검출 결과를 콘솔에 출력"""
+    try:
+        if response_data.get('status') == 'success':
+            detections = response_data.get('detections', [])
+            print(f"\n=== 객체 검출 결과 ===")
+            print(f"총 검출된 객체: {len(detections)}개")
+            
+            if detections:
+                print("\n검출된 객체 목록:")
+                for i, detection in enumerate(detections, 1):
+                    class_name = detection['class_name']
+                    confidence = detection['confidence']
+                    center = detection['center']
+                    print(f"  {i}. {class_name} (신뢰도: {confidence:.2f}, 중심: {center})")
+            else:
+                print("검출된 객체가 없습니다.")
+                
+            files = response_data.get('files', {})
+            print(f"\n저장된 파일:")
+            print(f"  원본 이미지: {files.get('original', 'N/A')}")
+            print(f"  결과 이미지: {files.get('result', 'N/A')}")
+            print(f"  JSON 파일: {files.get('json', 'N/A')}")
+            print("=" * 25)
+        else:
+            print(f"오류: {response_data.get('error', 'Unknown error')}")
+            
+    except Exception as e:
+        print(f"응답 처리 중 오류: {e}")
 
 def capture_and_send(image_type):
     """이미지 촬영 및 전송"""
@@ -75,10 +106,14 @@ def capture_and_send(image_type):
             end_time = time.time() * 1000
             transfer_time = end_time - start_time
             
-            print(f"전송 시간: {transfer_time:.1f}ms")
+            print(f"전송 및 처리 시간: {transfer_time:.1f}ms")
             
             if response.status_code == 200:
-                print(f"Upload successful: {response.text}")
+                try:
+                    response_data = response.json()
+                    print_detection_results(response_data)
+                except json.JSONDecodeError:
+                    print(f"Upload successful: {response.text}")
             else:
                 print(f"Upload failed: {response.status_code}")
                 print(f"Error: {response.text}")
@@ -89,11 +124,25 @@ def capture_and_send(image_type):
         camera.Close()
 
 def show_menu():
-    print("\n=== 이미지 전송 메뉴 ===")
-    print("1. 흑백 이미지 전송")
-    print("2. 컬러 이미지 전송")
-    print("3. 종료")
-    print("====================")
+    print("\n=== YOLOv11 객체 검출 메뉴 ===")
+    print("1. 흑백 이미지 전송 및 검출")
+    print("2. 컬러 이미지 전송 및 검출")
+    print("3. 서버 상태 확인")
+    print("4. 종료")
+    print("=============================")
+
+def check_server_health():
+    """서버 상태 확인"""
+    try:
+        response = requests.get('http://192.168.0.4:8001/health', timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"서버 상태: {data.get('status', 'unknown')}")
+            print(f"모델: {data.get('model', 'unknown')}")
+        else:
+            print(f"서버 응답 오류: {response.status_code}")
+    except Exception as e:
+        print(f"서버 상태 확인 실패: {e}")
 
 def main():
     # 서버 연결 테스트
@@ -106,22 +155,26 @@ def main():
         show_menu()
         
         try:
-            choice = int(input("선택하세요 (1-3): "))
+            choice = int(input("선택하세요 (1-4): "))
             
             if choice == 1:
-                print("\n흑백 이미지 전송을 시작합니다...")
+                print("\n흑백 이미지 전송 및 객체 검출을 시작합니다...")
                 capture_and_send(1)
                 
             elif choice == 2:
-                print("\n컬러 이미지 전송을 시작합니다...")
+                print("\n컬러 이미지 전송 및 객체 검출을 시작합니다...")
                 capture_and_send(2)
                 
             elif choice == 3:
+                print("\n서버 상태를 확인합니다...")
+                check_server_health()
+                
+            elif choice == 4:
                 print("프로그램을 종료합니다.")
                 break
                 
             else:
-                print("잘못된 선택입니다. 1-3 사이의 숫자를 입력하세요.")
+                print("잘못된 선택입니다. 1-4 사이의 숫자를 입력하세요.")
                 
         except ValueError:
             print("숫자를 입력하세요.")
