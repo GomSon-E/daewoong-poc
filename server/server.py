@@ -23,141 +23,98 @@ os.makedirs(MODELS_DIR, exist_ok=True)
 # 모델 전역 변수
 model = None
 
-def download_yolo11_model():
-    """YOLOv11 모델을 직접 다운로드하는 함수"""
-    model_path = os.path.join(MODELS_DIR, "yolo11n.pt")
-    
-    if os.path.exists(model_path):
-        print(f"모델 파일이 이미 존재합니다: {model_path}")
-        return model_path
-    
-    try:
-        print("YOLOv11n 모델을 다운로드하는 중...")
-        url = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11n.pt"
-        urllib.request.urlretrieve(url, model_path)
-        print(f"모델 다운로드 완료: {model_path}")
-        return model_path
-    except Exception as e:
-        print(f"모델 다운로드 실패: {e}")
-        return None
-
+# ! YOLOv11 모델을 로드
 def load_yolo11_model():
-    """YOLOv11 모델을 로드하는 함수"""
     global model
-    print("YOLOv11 모델 로딩 시작...")
-    
-    # 1. 먼저 ultralytics에서 자동 다운로드 시도
+
     try:
-        print("방법 1: ultralytics 자동 다운로드 시도...")
-        model = YOLO('yolo11n.pt')
+        model = YOLO('yolo11n-seg.pt')
         print("YOLOv11n 모델 로드 성공! (자동 다운로드)")
         return True
     except Exception as e:
         print(f"자동 다운로드 실패: {e}")
     
-    # 2. 수동 다운로드 후 로드 시도
-    try:
-        print("방법 2: 수동 다운로드 시도...")
-        model_path = download_yolo11_model()
-        if model_path and os.path.exists(model_path):
-            model = YOLO(model_path)
-            print("YOLOv11n 모델 로드 성공! (수동 다운로드)")
-            return True
-    except Exception as e:
-        print(f"수동 다운로드 후 로드 실패: {e}")
-    
-    # 3. 로컬에서 다른 경로 시도
-    try:
-        print("방법 3: 다른 모델명 시도...")
-        alternative_names = ['yolov11n.pt', 'yolo11n.yaml']
-        for name in alternative_names:
-            try:
-                model = YOLO(name)
-                print(f"{name} 모델 로드 성공!")
-                return True
-            except:
-                continue
-    except Exception as e:
-        print(f"대체 모델명 시도 실패: {e}")
-    
-    print("모든 YOLOv11 로드 방법 실패")
     return False
 
+# ! 검출된 객체에 폴리곤 마스크 그리기
 def draw_detections(image, results):
-    """검출된 객체에 바운딩 박스와 레이블을 그리는 함수"""
     for result in results:
+        masks = result.masks
         boxes = result.boxes
-        if boxes is not None:
-            for box in boxes:
-                # 바운딩 박스 좌표
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                
-                # 신뢰도와 클래스
+        
+        if masks is not None and boxes is not None:
+            for mask, box in zip(masks.data, boxes):
                 confidence = box.conf[0].cpu().numpy()
                 class_id = int(box.cls[0].cpu().numpy())
                 class_name = model.names[class_id]
                 
-                # 신뢰도가 0.5 이상인 경우만 표시
                 if confidence >= 0.5:
-                    # 바운딩 박스 그리기
-                    cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    # 마스크를 폴리곤 좌표로 변환
+                    mask_np = mask.cpu().numpy()
+                    mask_resized = cv2.resize(mask_np, (image.shape[1], image.shape[0]))
                     
-                    # 레이블 텍스트
+                    # 컨투어 찾기
+                    contours, _ = cv2.findContours(
+                        (mask_resized > 0.5).astype(np.uint8), 
+                        cv2.RETR_EXTERNAL, 
+                        cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    
+                    # 폴리곤 그리기
+                    for contour in contours:
+                        if len(contour) >= 3:  # 최소 3개 점이 있어야 폴리곤
+                            cv2.polylines(image, [contour], True, (0, 255, 0), 2)
+                            # 또는 채워진 폴리곤: cv2.fillPoly(image, [contour], (0, 255, 0))
+                    
+                    # 레이블 추가
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
                     label = f"{class_name}: {confidence:.2f}"
-                    
-                    # 텍스트 배경 그리기
-                    (text_width, text_height), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-                    cv2.rectangle(image, (x1, y1 - text_height - 10), (x1 + text_width, y1), (0, 255, 0), -1)
-                    
-                    # 텍스트 그리기
-                    cv2.putText(image, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                    cv2.putText(image, label, (x1, y1 - 5), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
     
     return image
 
+# ! 검출 결과에서 객체 정보 추출
 def extract_detection_info(results):
-    """검출 결과에서 정보를 추출하는 함수"""
     detections = []
     
     for result in results:
+        masks = result.masks
         boxes = result.boxes
-        if boxes is not None:
-            for box in boxes:
-                # NumPy 타입을 Python 기본 타입으로 변환
-                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)  # Python int로 명시적 변환
-                
+        
+        if masks is not None and boxes is not None:
+            for mask, box in zip(masks.data, boxes):
                 confidence = float(box.conf[0].cpu().numpy())
                 class_id = int(box.cls[0].cpu().numpy())
-                class_name = str(model.names[class_id])  # 문자열로 명시적 변환
+                class_name = str(model.names[class_id])
                 
-                # 신뢰도가 0.5 이상인 경우만 포함
                 if confidence >= 0.5:
-                    center_x = int((x1 + x2) // 2)
-                    center_y = int((y1 + y2) // 2)
+                    # 마스크를 폴리곤 좌표로 변환
+                    mask_np = mask.cpu().numpy()
+                    # 이미지 크기에 맞게 리사이즈 (실제 구현시 이미지 크기 필요)
+                    
+                    # 컨투어 찾기
+                    contours, _ = cv2.findContours(
+                        (mask_np > 0.5).astype(np.uint8), 
+                        cv2.RETR_EXTERNAL, 
+                        cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    
+                    polygons = []
+                    for contour in contours:
+                        if len(contour) >= 3:
+                            # 폴리곤 좌표를 리스트로 변환
+                            polygon = contour.reshape(-1, 2).tolist()
+                            polygons.append(polygon)
                     
                     detections.append({
                         "class_name": class_name,
-                        "confidence": round(confidence, 3),  # 소수점 3자리로 제한
-                        "bbox": [x1, y1, x2, y2],
-                        "center": [center_x, center_y]
+                        "confidence": round(confidence, 3),
+                        "polygons": polygons,
+                        "bbox": box.xyxy[0].cpu().numpy().astype(int).tolist()
                     })
     
     return detections
-
-# 서버 시작시 YOLOv11 모델 로드
-print("=" * 50)
-print("YOLOv11 Object Detection Server 시작")
-print("=" * 50)
-
-if not load_yolo11_model():
-    print("❌ 경고: YOLOv11 모델을 로드할 수 없습니다!")
-    print("다음 명령어를 시도해보세요:")
-    print("1. pip install --upgrade ultralytics")
-    print("2. pip install torch torchvision")
-    print("3. python -c \"from ultralytics import YOLO; YOLO('yolo11n.pt')\"")
-    exit(1)
-else:
-    print("✅ YOLOv11 모델 준비 완료!")
 
 @app.get("/")
 async def root():
@@ -244,28 +201,6 @@ async def upload_image(image: bytes = File()):
         print(f"YOLOv11 처리 중 오류: {e}")
         return {"error": str(e)}
 
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy", 
-        "model": "YOLOv11n",
-        "model_loaded": model is not None,
-        "torch_version": torch.__version__
-    }
-
-@app.get("/model-info")
-async def model_info():
-    if model is None:
-        return {"error": "Model not loaded"}
-    
-    try:
-        return {
-            "model_type": "YOLOv11n",
-            "classes": list(model.names.values()),
-            "num_classes": len(model.names)
-        }
-    except Exception as e:
-        return {"error": str(e)}
-
 if __name__ == "__main__":
+    load_yolo11_model()
     uvicorn.run(app, host="0.0.0.0", port=8001)
